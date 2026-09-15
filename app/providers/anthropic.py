@@ -1,15 +1,24 @@
+import json
+
 from anthropic import AsyncAnthropic, APIStatusError
-from .base import AIProvider, ProviderErrorType
+
+from .base import (
+    AIProvider,
+    AIResponse,
+    ProviderErrorType,
+    ToolCall,
+)
 
 
 class AnthropicProvider(AIProvider):
 
-    async def generate(
+    async def chat(
         self,
-        message: str,
+        messages: list[dict],
         model: str | None = None,
         api_key: str | None = None,
-    ) -> str:
+        tools: list[dict] | None = None,
+    ) -> AIResponse:
         if not api_key:
             raise ValueError(
                 "Anthropic API key is required"
@@ -17,22 +26,133 @@ class AnthropicProvider(AIProvider):
 
         client = AsyncAnthropic(api_key=api_key)
 
-        try:
-            response = await client.messages.create(
-                model=model or "claude-sonnet-4-5",
-                max_tokens=4096,
-                messages=[
+        anthropic_messages: list[dict] = []
+
+        for message in messages:
+            role = message["role"]
+
+            if role == "tool":
+                anthropic_messages.append(
                     {
                         "role": "user",
-                        "content": message,
+                        "content": [
+                            {
+                                "type": "tool_result",
+                                "tool_use_id": message[
+                                    "tool_call_id"
+                                ],
+                                "content": message[
+                                    "content"
+                                ],
+                            }
+                        ],
                     }
-                ],
+                )
+                continue
+
+            if role == "assistant" and message.get(
+                "tool_calls"
+            ):
+                content: list[dict] = []
+
+                if message.get("content"):
+                    content.append(
+                        {
+                            "type": "text",
+                            "text": message["content"],
+                        }
+                    )
+
+                for call in message["tool_calls"]:
+                    content.append(
+                        {
+                            "type": "tool_use",
+                            "id": call["id"],
+                            "name": call["function"]["name"],
+                            "input": json.loads(
+                                call["function"]["arguments"]
+                            ),
+                        }
+                    )
+
+                anthropic_messages.append(
+                    {
+                        "role": "assistant",
+                        "content": content,
+                    }
+                )
+                continue
+
+            anthropic_messages.append(
+                {
+                    "role": role,
+                    "content": message.get(
+                        "content",
+                        "",
+                    ),
+                }
             )
 
-            return "".join(
-                block.text
-                for block in response.content
-                if hasattr(block, "text")
+        anthropic_tools: list[dict] = []
+
+        for tool in tools or []:
+            function = tool.get(
+                "function",
+                {},
+            )
+
+            anthropic_tools.append(
+                {
+                    "name": function["name"],
+                    "description": function.get(
+                        "description",
+                        "",
+                    ),
+                    "input_schema": function.get(
+                        "parameters",
+                        {
+                            "type": "object",
+                            "properties": {},
+                        },
+                    ),
+                }
+            )
+
+        try:
+            request: dict = {
+                "model": model or "claude-sonnet-4-5",
+                "max_tokens": 4096,
+                "messages": anthropic_messages,
+            }
+
+            if anthropic_tools:
+                request["tools"] = anthropic_tools
+
+            response = await client.messages.create(
+                **request
+            )
+
+            tool_calls: list[ToolCall] = []
+            text_parts: list[str] = []
+
+            for block in response.content:
+                if block.type == "text":
+                    text_parts.append(
+                        block.text
+                    )
+
+                elif block.type == "tool_use":
+                    tool_calls.append(
+                        ToolCall(
+                            id=block.id,
+                            name=block.name,
+                            arguments=block.input,
+                        )
+                    )
+
+            return AIResponse(
+                content="".join(text_parts),
+                tool_calls=tool_calls,
             )
 
         except APIStatusError as error:

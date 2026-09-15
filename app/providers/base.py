@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
 
 class ProviderErrorType(str, Enum):
@@ -12,16 +14,57 @@ class ProviderErrorType(str, Enum):
     UNKNOWN = "unknown"
 
 
+@dataclass
+class ToolCall:
+    id: str
+    name: str
+    arguments: dict[str, Any]
+
+    # Provider-specific metadata that must survive
+    # the tool-calling round trip.
+    metadata: dict[str, Any] = field(
+        default_factory=dict
+    )
+
+
+@dataclass
+class AIResponse:
+    content: str = ""
+    tool_calls: list[ToolCall] = field(
+        default_factory=list
+    )
+
+
 class AIProvider(ABC):
 
     @abstractmethod
+    async def chat(
+        self,
+        messages: list[dict[str, Any]],
+        model: str | None = None,
+        api_key: str | None = None,
+        tools: list[dict[str, Any]] | None = None,
+    ) -> AIResponse:
+        pass
+
     async def generate(
         self,
         message: str,
         model: str | None = None,
         api_key: str | None = None,
     ) -> str:
-        pass
+        response = await self.chat(
+            messages=[
+                {
+                    "role": "user",
+                    "content": message,
+                }
+            ],
+            model=model,
+            api_key=api_key,
+        )
+
+        return response.content
 
     @abstractmethod
     async def get_models(

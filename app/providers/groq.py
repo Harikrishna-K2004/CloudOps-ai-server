@@ -1,15 +1,25 @@
+import json
+
 from groq import AsyncGroq, APIStatusError
-from .base import AIProvider, ProviderErrorType
+
+from .base import (
+    AIProvider,
+    AIResponse,
+    ProviderErrorType,
+    ToolCall,
+)
 from app.model_catalog.groq import is_groq_chat_model
+
 
 class GroqProvider(AIProvider):
 
-    async def generate(
+    async def chat(
         self,
-        message: str,
+        messages: list[dict],
         model: str | None = None,
         api_key: str | None = None,
-    ) -> str:
+        tools: list[dict] | None = None,
+    ) -> AIResponse:
         if not api_key:
             raise ValueError(
                 "Groq API key is required"
@@ -18,9 +28,49 @@ class GroqProvider(AIProvider):
         client = AsyncGroq(api_key=api_key)
 
         try:
+            request: dict = {
+                "model": model or "openai/gpt-oss-20b",
+                "messages": messages,
+            }
+
+            if tools:
+                request["tools"] = tools
+
             response = await client.chat.completions.create(
-                model=model or "openai/gpt-oss-20b",
-                messages=[{"role": "user", "content": message}],
+                **request
+            )
+
+            message = response.choices[0].message
+
+            tool_calls: list[ToolCall] = []
+
+            for call in message.tool_calls or []:
+                try:
+                    arguments = json.loads(
+                        call.function.arguments
+                    )
+                except json.JSONDecodeError:
+                    arguments = {}
+
+                tool_calls.append(
+                    ToolCall(
+                        id=call.id,
+                        name=call.function.name,
+                        arguments=arguments,
+                    )
+                )
+
+            content = message.content or ""
+
+            if "<think>" in content and "</think>" in content:
+                content = content.split(
+                    "</think>",
+                    1,
+                )[1].strip()
+
+            return AIResponse(
+                content=content,
+                tool_calls=tool_calls,
             )
 
         except APIStatusError as error:
@@ -44,22 +94,17 @@ class GroqProvider(AIProvider):
 
             raise ValueError(
                 f"{ProviderErrorType.UNKNOWN.value}: "
-                "Groq request failed"
+                f"Groq request failed: {error.body}"
             )
-
-        content = response.choices[0].message.content or ""
-
-        if "<think>" in content and "</think>" in content:
-            content = content.split("</think>", 1)[1].strip()
-
-        return content
 
     async def get_models(
         self,
         api_key: str | None = None,
     ) -> list[dict]:
         if not api_key:
-            raise ValueError("Groq API key is required")
+            raise ValueError(
+                "Groq API key is required"
+            )
 
         client = AsyncGroq(api_key=api_key)
 
@@ -88,7 +133,11 @@ class GroqProvider(AIProvider):
             {
                 "id": model.id,
                 "name": model.id,
-                "owned_by": getattr(model, "owned_by", None),
+                "owned_by": getattr(
+                    model,
+                    "owned_by",
+                    None,
+                ),
             }
             for model in models.data
             if is_groq_chat_model(model.id)

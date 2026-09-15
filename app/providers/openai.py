@@ -1,15 +1,24 @@
+import json
+
 from openai import AsyncOpenAI, APIStatusError
-from .base import AIProvider, ProviderErrorType
+
+from .base import (
+    AIProvider,
+    AIResponse,
+    ProviderErrorType,
+    ToolCall,
+)
 
 
 class OpenAIProvider(AIProvider):
 
-    async def generate(
+    async def chat(
         self,
-        message: str,
+        messages: list[dict],
         model: str | None = None,
         api_key: str | None = None,
-    ) -> str:
+        tools: list[dict] | None = None,
+    ) -> AIResponse:
         if not api_key:
             raise ValueError(
                 "OpenAI API key is required"
@@ -18,12 +27,42 @@ class OpenAIProvider(AIProvider):
         client = AsyncOpenAI(api_key=api_key)
 
         try:
-            response = await client.responses.create(
-                model=model or "gpt-4.1-mini",
-                input=message,
+            request: dict = {
+                "model": model or "gpt-4.1-mini",
+                "messages": messages,
+            }
+
+            if tools:
+                request["tools"] = tools
+
+            response = await client.chat.completions.create(
+                **request
             )
 
-            return response.output_text
+            message = response.choices[0].message
+
+            tool_calls: list[ToolCall] = []
+
+            for call in message.tool_calls or []:
+                try:
+                    arguments = json.loads(
+                        call.function.arguments
+                    )
+                except json.JSONDecodeError:
+                    arguments = {}
+
+                tool_calls.append(
+                    ToolCall(
+                        id=call.id,
+                        name=call.function.name,
+                        arguments=arguments,
+                    )
+                )
+
+            return AIResponse(
+                content=message.content or "",
+                tool_calls=tool_calls,
+            )
 
         except APIStatusError as error:
             if error.status_code in (401, 403):
