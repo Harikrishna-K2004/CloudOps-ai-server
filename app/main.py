@@ -1,5 +1,6 @@
 from aiohttp import request
 import json
+import traceback
 
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
@@ -366,13 +367,21 @@ async def chat(request: ChatRequest):
         raise
 
     except Exception as error:
-        print(
-            f"AI provider error: {error}"
+        print("\n========== CLOUDOPS AI ERROR ==========")
+        print(f"Error type: {type(error).__name__}")
+        print(f"Error message: {error!r}")
+
+        traceback.print_exception(
+            type(error),
+            error,
+            error.__traceback__,
         )
+
+        print("=======================================\n")
 
         raise HTTPException(
             status_code=502,
-            detail="AI provider request failed",
+            detail=f"AI request failed: {type(error).__name__}",
         )
 
     finally:

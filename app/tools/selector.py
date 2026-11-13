@@ -1,7 +1,38 @@
+
 import json
 from typing import Any
 
 from app.providers.base import AIProvider
+
+
+def _parse_json_response(content: str) -> dict[str, Any]:
+    content = content.strip()
+
+    # Remove Markdown code fences if the model returns them.
+    if content.startswith("```"):
+        lines = content.splitlines()
+
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+
+        content = "\n".join(lines).strip()
+
+    try:
+        result = json.loads(content)
+    except json.JSONDecodeError as error:
+        raise ValueError(
+            f"Integration selector returned invalid JSON: {content}"
+        ) from error
+
+    if not isinstance(result, dict):
+        raise ValueError(
+            "Integration selector response must be a JSON object."
+        )
+
+    return result
 
 
 async def select_integrations(
@@ -11,13 +42,6 @@ async def select_integrations(
     model: str | None,
     api_key: str | None,
 ) -> list[str]:
-    """
-    Stage 1:
-    Ask the model which connected integrations are relevant.
-
-    The model receives only integration metadata.
-    No tool definitions or credentials are exposed.
-    """
 
     if not integrations:
         return []
@@ -47,6 +71,7 @@ Rules:
 - Do not invent integrations.
 - Do not select an integration merely because it might be useful.
 - Return ONLY valid JSON.
+- Do not use Markdown or code fences.
 - Return exactly this format:
 
 {{"integrations":["provider_id_1","provider_id_2"]}}
@@ -68,14 +93,7 @@ If no integration is needed, return:
         tools=None,
     )
 
-    content = response.content.strip()
-
-    try:
-        result: dict[str, Any] = json.loads(content)
-    except json.JSONDecodeError as error:
-        raise ValueError(
-            f"Integration selector returned invalid JSON: {content}"
-        ) from error
+    result = _parse_json_response(response.content)
 
     selected = result.get("integrations")
 
